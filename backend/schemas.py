@@ -18,6 +18,9 @@ class ItineraryActivityOut(BaseModel):
     location: Optional[str] = None
     description: Optional[str] = None
 
+    image_url: Optional[str] = None
+    info_url: Optional[str] = None
+
 class ItineraryDayOut(BaseModel):
     day_index: int
     date: date
@@ -28,3 +31,5 @@ class ItineraryOut(BaseModel):
     title: str
     notes: Optional[str] = None
     days: List[ItineraryDayOut]
+    destination_image_url: Optional[str] = None
+    destination_info_url: Optional[str] = None
