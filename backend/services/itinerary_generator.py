@@ -20,8 +20,23 @@ FOOD_SUGGESTIONS = {
     ]
 }
 
+def safe_json_loads(text: str):
+    # try direct
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    # try extracting the largest JSON object
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = text[start:end+1]
+        return json.loads(candidate)  # may still raise
+    raise ValueError("No valid JSON found")
+
 def _fallback_plan(destination: str, interests: List[str]) -> List[Dict]:
-    key = destination.lower()
+    key = destination.split(",")[0].strip().lower()
     picks = FOOD_SUGGESTIONS.get(key, [
         ("Local food market", "market", "Explore local market stalls and taste seasonal food."),
         ("Signature street food", "food", "Try the city’s most famous street food."),
@@ -31,19 +46,23 @@ def _fallback_plan(destination: str, interests: List[str]) -> List[Dict]:
     # Always focus on food in MVP
     return [{"title": t, "category": c, "description": d} for (t, c, d) in picks]
 
-def _build_prompt(destination: str, party_type: str, budget: str, interests: List[str], days: int) -> str:
+def _build_prompt(destination: str, party_type: str, budget: str, interests: List[str],
+                  start_date: str, end_date: str, days: int) -> str:
     return f"""
 You are a travel itinerary planner.
+
 Create a {days}-day itinerary for: {destination}.
+Trip dates: {start_date} to {end_date}.
 Party type: {party_type}. Budget: {budget}. Interests: {', '.join(interests) if interests else 'general'}.
 
-Return STRICT JSON only (no markdown), with this schema:
+Return STRICT JSON only (no markdown, no explanation), exactly this schema:
 {{
   "title": "...",
   "notes": "...",
   "days": [
     {{
       "day_index": 1,
+      "date": "YYYY-MM-DD",
       "activities": [
         {{
           "start_time": "09:00",
@@ -59,27 +78,53 @@ Return STRICT JSON only (no markdown), with this schema:
 }}
 
 Rules:
-- 4 activities per day (morning, lunch, afternoon, dinner)
-- Emphasize FOOD experiences if interest includes "food"
-- Keep locations plausible and varied
+- Return STRICT JSON only.
+- Do NOT include markdown.
+- Do NOT include comments.
+- Do NOT include explanations.
+- Do NOT include trailing commas.
+- Do NOT include any text before or after the JSON.
+- The JSON MUST be valid and parseable by Python json.loads().
+- Generate exactly 4 activities per day (morning, lunch, afternoon, dinner).
+- Dates must match the trip range and correspond to day_index.
+- Emphasize FOOD experiences if interests include "food".
+- Keep locations realistic, plausible, and varied.
+- Use double quotes ONLY for JSON syntax. Do not use quotes inside values.
+Example of VALID JSON (this is only an example, do not copy values):
+{{"title":"Trip","notes":"...","days":[{{"day_index":1,"date":"2026-02-15","activities":[{{"start_time":"09:00","end_time":"11:00","title":"Activity","category":"food","location":"Istanbul","description":"..."}}]}}]}}
 """
 
 def generate_itinerary_structured(destination: str, start_date, end_date, party_type: str, budget: str, interests: List[str]):
     days_count = (end_date - start_date).days + 1
     # Try Ollama first
-    prompt = _build_prompt(destination, party_type, budget, interests, days_count)
+    prompt = _build_prompt(destination=destination, party_type=party_type,
+    budget=budget, interests=interests,
+    start_date=str(start_date), end_date=str(end_date),
+    days=days_count)
+    print("AI mode: trying Ollama...")
     text = generate_with_ollama(prompt)
 
+    if text is None:
+        print("AI mode: Ollama returned None (unavailable/timeout/error) → fallback")
+
     if text:
+        print("AI mode: Ollama response received ✅")
         # try parse JSON safely
         try:
-            data = json.loads(text)
+            #data = json.loads(text)
+            data = safe_json_loads(text)
             return data
-        except Exception:
+        except Exception as e:
             # fall back
+            print(f"[AI] Ollama returned non-JSON → fallback. Error: {e}")
+            print("---- RAW OLLAMA OUTPUT START ----")
+            print(text[:2000])  # print first 2000 chars
+            print("---- RAW OLLAMA OUTPUT END ----")
             pass
 
     # Fallback (no Ollama / parse failed)
+    print("AI mode: fallback (no Ollama / invalid JSON) ⚠️")
+
     plan_items = _fallback_plan(destination, interests)
     data = {
         "title": f"{destination} – {days_count}-Day Food-Focused Trip",

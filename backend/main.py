@@ -19,6 +19,10 @@ def get_db():
     finally:
         db.close()
 
+@app.get("/")
+def root():
+    return {"message": "AI Trip Planner API is running", "health": "/health"}
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
