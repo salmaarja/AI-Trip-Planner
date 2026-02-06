@@ -437,17 +437,100 @@ def _fallback_plan(destination: str, interests: List[str]) -> List[Dict]:
 
 def _build_prompt(destination: str, party_type: str, budget: str, interests: List[str],
                   start_date: str, end_date: str, days: int) -> str:
+    interests_l = [i.lower().strip() for i in (interests or [])]
+    interests_text = ", ".join(interests_l) if interests_l else "general"
+
+    party = (party_type or "solo").lower().strip()
+    bud = (budget or "balanced").lower().strip()
+
+    # Party-type rules (this is the key: different inputs => different plan)
+    if party in {"family"}:
+        party_rules = [
+            "Keep the pace relaxed with fewer long walks.",
+            "Prefer family-friendly and safe places; avoid nightlife.",
+            "Dinner should be early and calm.",
+            "Include parks/markets/easy attractions."
+        ]
+        vibe = "family-friendly, relaxed, safe"
+    elif party in {"couple"}:
+        party_rules = [
+            "Include romantic/beautiful spots (views, waterfront, cozy cafés).",
+            "Balance sightseeing with relaxing experiences.",
+            "Dinner can be nicer and scenic."
+        ]
+        vibe = "romantic, relaxed, scenic"
+    elif party in {"friends"}:
+        party_rules = [
+            "More energetic pace is OK.",
+            "Include trendy areas, street food, and social places.",
+            "Dinner can be later; include optional evening activity."
+        ]
+        vibe = "social, energetic, trendy"
+    else:  # solo
+        party_rules = [
+            "Mix culture + food + easy navigation.",
+            "Prefer safe, well-known areas and clear routes.",
+            "Include at least one flexible/free exploration block."
+        ]
+        vibe = "independent, safe, flexible"
+
+    # Budget rules
+    if bud in {"cheap", "low", "budget"}:
+        budget_rules = [
+            "Prioritize free/low-cost attractions and walking routes.",
+            "Use street food, markets, simple local restaurants.",
+            "Avoid expensive tours unless clearly worth it."
+        ]
+        budget_style = "budget-conscious, mostly free/low-cost"
+    elif bud in {"luxury", "high"}:
+        budget_rules = [
+            "Include premium experiences (fine dining, paid attractions, guided tour suggestion).",
+            "Prefer comfortable options over long walking.",
+            "Quality over quantity."
+        ]
+        budget_style = "premium, comfort-focused"
+    else:  # balanced / medium
+        budget_rules = [
+            "Mix free attractions with 1 paid highlight per day if appropriate.",
+            "Use a mix of casual + one nicer meal."
+        ]
+        budget_style = "balanced, mixed-cost"
+
+    # Interest rules (weights)
+    interest_rules = []
+    if "food" in interests_l:
+        interest_rules.append("Strongly emphasize food experiences (markets, street food, breakfast/dessert spots).")
+    if "shopping" in interests_l:
+        interest_rules.append("Include shopping options (bazaars, streets, malls) without repeating the same type daily.")
+    if "history" in interests_l:
+        interest_rules.append("Include historical/cultural highlights (old town, museums, landmarks).")
+    if "culture" in interests_l:
+        interest_rules.append("Include cultural experiences (local neighborhoods, art, traditions).")
+    if "nature" in interests_l:
+        interest_rules.append("Include nature/parks/viewpoints (not shopping).")  # fix your earlier typo
+    if not interest_rules:
+        interest_rules.append("Keep a general balanced itinerary (food + sightseeing + local area).")
+
+    rules_block = "\n".join(f"- {r}" for r in (party_rules + budget_rules + interest_rules))
+
     return f"""
-You are a travel itinerary planner.
+You are an AI travel planning system.
 
-Create a {days}-day itinerary for: {destination}.
-Trip dates: {start_date} to {end_date}.
-Party type: {party_type}. Budget: {budget}. Interests: {', '.join(interests) if interests else 'general'}.
+Create a {days}-day itinerary for:
+Destination: {destination}
+Dates: {start_date} to {end_date}
+Party type: {party_type}
+Budget: {budget}
+Interests: {interests_text}
 
-Return STRICT JSON only (no markdown, no explanation), exactly this schema:
+Return STRICT JSON ONLY (no markdown, no extra text) using EXACTLY this schema:
+
 {{
   "title": "...",
-  "notes": "...",
+  "notes": "Profile: party={party}, budget={bud}, vibe={vibe}, budget_style={budget_style}",
+  "explanations": [
+    "..."
+  ],
   "days": [
     {{
       "day_index": 1,
@@ -466,27 +549,49 @@ Return STRICT JSON only (no markdown, no explanation), exactly this schema:
   ]
 }}
 
-Rules:
-- Return STRICT JSON only.
-- Do NOT include markdown.
-- Do NOT include comments.
-- Do NOT include explanations.
-- Do NOT include trailing commas.
-- Do NOT include any text before or after the JSON.
-- The JSON MUST be valid and parseable by Python json.loads().
-- Generate exactly 4 activities per day (morning, lunch, afternoon, dinner).
-- Dates must match the trip range and correspond to day_index.
-- Emphasize FOOD experiences if interests include "food".
-- If interests include "shopping", make at least 2 of the 4 daily activities shopping-related.
-- If interests include "history", make at least 2 of the 4 daily activities history-related.
-- If interests include "culture", make at least 2 of the 4 daily activities culture-related.
-- If interests include "nature", make at least 2 of the 4 daily activities shopping-related.
-- Keep locations realistic, plausible, and varied.
-- Use double quotes ONLY for JSON syntax. Do not use quotes inside values.
+Hard rules:
+- Output must be VALID JSON parseable by Python json.loads()
+- Output JSON only (no text before/after)
+- Include an "explanations" array with EXACTLY 5 items.
 
-Example of VALID JSON (this is only an example, do not copy values):
-{{"title":"Trip","notes":"...","days":[{{"day_index":1,"date":"2026-02-15","activities":[{{"start_time":"09:00","end_time":"11:00","title":"Activity","category":"food","location":"Istanbul","description":"..."}}]}}]}}
+Each explanation MUST:
+1. Explicitly mention ONE user input (party_type OR budget OR interests OR trip length).
+2. Explain WHY the itinerary decisions match that input.
+3. Use causal language (because, therefore, so that).
+
+Bad example:
+"Family friendly activities were selected."
+
+Good example:
+"Because the party type is family, activities were chosen with short walking distances and safe public areas."
+
+Do NOT repeat the same reasoning twice.
+
+- Generate exactly 4 activities per day (morning, lunch, afternoon, dinner)
+- Keep descriptions short (max ~160 characters)
+- Avoid using double quotes inside values; if needed escape as \\"
+- "notes" MUST be a single string, not a list, not an object.
+
+Party-type rules:
+- If party_type = family → prefer safe areas, parks, markets, shorter activities, relaxed pace.
+- If party_type = solo → allow longer walks, niche food spots, flexible timing.
+- If party_type = couple → prefer romantic areas, scenic cafés, evening dining.
+- If party_type = friends → include lively streets, shared food experiences.
+Budget rules:
+- cheap → street food, markets, free attractions, public spaces.
+- medium → mix of casual restaurants and paid attractions.
+- luxury → fine dining, premium experiences, fewer but higher-quality activities.
+Repetition rules:
+- Do NOT repeat the same venue name across different days.
+- If a venue appears once, choose a different venue for later meals.
+- Variety is required across days.
+
+
+Planning constraints to follow:
+{rules_block}
 """
+
+
 
 def generate_itinerary_structured(destination: str, start_date, end_date, party_type: str, budget: str, interests: List[str]):
     days_count = (end_date - start_date).days + 1
@@ -508,7 +613,7 @@ def generate_itinerary_structured(destination: str, start_date, end_date, party_
     print("POI pool time:", round(time.time() - t1, 2), "sec", "pool size:", len(poi_pool))
 
     if text is None:
-        print("AI mode: Ollama returned None (unavailable/timeout/error) → fallback")
+        raise RuntimeError("Ollama is not running or did not return a response.")
 
     if text:
         print("AI mode: Ollama response received ✅")
@@ -516,6 +621,14 @@ def generate_itinerary_structured(destination: str, start_date, end_date, party_
         try:
             #data = json.loads(text)
             data = safe_json_loads(text)
+
+            # Ensure notes is a string (DB expects TEXT)
+            if isinstance(data.get("notes"), list):
+                data["notes"] = " | ".join(str(x) for x in data["notes"])
+
+            if "explanations" not in data or not isinstance(data["explanations"], list) or not data["explanations"]:
+                raise ValueError("AI output missing explanations[]")
+
             data = _normalize_ai_output(data, destination, start_date, days_count, poi_pool)
             data = _enforce_uniqueness(data, poi_pool, destination)
 
@@ -524,43 +637,10 @@ def generate_itinerary_structured(destination: str, start_date, end_date, party_
             data["destination_info_url"] = dest_media.get("info_url")
             return data
         except Exception as e:
-            # fall back
-            print(f"[AI] Ollama returned non-JSON → fallback. Error: {e}")
             print("---- RAW OLLAMA OUTPUT START ----")
-            print(text[:2000])  # print first 2000 chars
+            print(text[:4000])
             print("---- RAW OLLAMA OUTPUT END ----")
-            pass
+            raise RuntimeError(f"Ollama returned invalid JSON: {e}")
 
-    # Fallback (no Ollama / parse failed)
-    print("AI mode: fallback (no Ollama / invalid JSON) ⚠️")
 
-    plan_items = _fallback_plan(destination, interests)
-    data = {
-        "title": f"{destination} – {days_count}-Day Food-Focused Trip",
-        "notes": "Generated in FREE mode (no cloud APIs). You can enable Ollama for richer plans.",
-        "days": []
-    }
-
-    for i in range(days_count):
-        day_date = start_date + timedelta(days=i)
-        activities = []
-        # choose 4 items cycling
-        for slot_idx, (st, et, _) in enumerate(TIME_SLOTS):
-            item = plan_items[(i * 2 + slot_idx) % len(plan_items)]
-            activities.append({
-                "start_time": st,
-                "end_time": et,
-                "title": item["title"],
-                "category": item["category"],
-                "location": destination,
-                "description": item["description"]
-            })
-        data["days"].append({"day_index": i + 1, "date": str(day_date), "activities": activities})
-
-    fallback_data = build_from_pool_unique(destination, start_date, end_date, days_count, poi_pool)
-
-    fallback_data["destination_image_url"] = dest_media.get("image_url")
-    fallback_data["destination_info_url"] = dest_media.get("info_url")
-
-    return fallback_data
 
